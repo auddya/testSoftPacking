@@ -5,11 +5,12 @@
 
 //Mechanics residual implementation
 template <int dim>
-void residualForChemo(FEValues<dim>& fe_values, unsigned int DOF, FEFaceValues<dim>& fe_face_values, const typename DoFHandler<dim>::active_cell_iterator &cell, double dt, dealii::Table<1, Sacado::Fad::DFad<double> >& ULocal, dealii::Table<1, double>& ULocalConv, dealii::Table<1, Sacado::Fad::DFad<double> >& R, double currentTime, double totalTime, deformationMap<Sacado::Fad::DFad<double>, dim>& defMap){
+void residualForChemo(FEValues<dim>& fe_values, unsigned int DOF, FEFaceValues<dim>& fe_face_values, const typename DoFHandler<dim>::active_cell_iterator &cell, double dt, dealii::Table<1, Sacado::Fad::DFad<double> >& ULocal, dealii::Table<1, double>& ULocalConv, dealii::Table<1, Sacado::Fad::DFad<double> >& R, double currentTime, double totalTime){
   unsigned int dofs_per_cell= fe_values.dofs_per_cell;
   unsigned int n_q_points= fe_values.n_quadrature_points;
 
   double pressure=PressureValue; //Just for debugging, considering constant pressure
+  
   dealii::Table<2,Sacado::Fad::DFad<double> > c(CDOFs, n_q_points), mu(CDOFs, n_q_points);
   dealii::Table<3,Sacado::Fad::DFad<double> > c_j(CDOFs, n_q_points, dim);
   dealii::Table<3,Sacado::Fad::DFad<double> > mu_j(CDOFs, n_q_points, dim);
@@ -51,32 +52,35 @@ void residualForChemo(FEValues<dim>& fe_values, unsigned int DOF, FEFaceValues<d
 	if (ck==0){
 	  R[i] +=  (1/dt)*fe_values.shape_value(i, q)*(c[cDof][q]-c_conv[cDof][q])*fe_values.JxW(q);
 	  if (currentTime>timeForEquilibrium){
-	    if (c_conv[cDof][q]<0.99) {
-	      //R[i] +=  -fe_values.shape_value(i, q)*Source*fe_values.JxW(q); //source term
+	    if (c_conv[cDof][q]>0.99) {
+	      R[i] +=  -fe_values.shape_value(i, q)*Source*fe_values.JxW(q); //source term
 	    }
 	  }
 	  for (unsigned int j = 0; j < dim; j++){
-	    //With compositon dependent mobility M*c*(1-c)
-	    //R[i] += fe_values.shape_value(i, q)*(M*(1-2*c[q])*c_j[q][j])*mu_j[q][j]*fe_values.JxW(q);
-	    //R[i] += fe_values.shape_grad(i, q)[j]*(M*c[q]*(1-c[q]))*mu_j[q][j]*fe_values.JxW(q);
 	    //With constant mobility
 	    R[i] += fe_values.shape_grad(i, q)[j]*M*mu_j[cDof][q][j]*fe_values.JxW(q);
 	  }
 	}
 	else if(ck==1){
 	  Sacado::Fad::DFad<double> dfdc  = dFdC;
-	  if (cDof==0) dfdc += 200*c[cDof][q]*c[1][q]*c[1][q];
-	  else if (cDof==1) dfdc += 200*c[cDof][q]*c[0][q]*c[0][q];
+	  //add cross penalty terms to free energy
+	  for (unsigned int cDof2=0; cDof2<CDOFs; cDof2++){
+	    if (cDof2!=cDof) dfdc += 200*c[cDof][q]*c[cDof2][q]*c[cDof2][q];
+	  }
+	  //add surface buffer zone
+	  if (c[cDof][q].val()>0.1 || true){
+	    MappingQ1<dim,dim> quadMap;
+	    Point<dim> quadPoint(quadMap.transform_unit_to_real_cell(cell, fe_values.get_quadrature().point(q)));
+	    if (((quadPoint[0]<(-problemWidth/2+bufferSpace)) || (quadPoint[0]> (problemWidth/2-bufferSpace)) || (quadPoint[1]<(-problemWidth/2+bufferSpace)) || (quadPoint[1]>(problemWidth/2-bufferSpace)))){
+	      dfdc += 200*c[cDof][q]*1.0*1.0;
+	    }
+	  }
+	  //
 	  R[i] +=  fe_values.shape_value(i, q)*(mu[cDof][q] - dfdc)*fe_values.JxW(q);
 	  //R[i] +=  fe_values.shape_value(i, q)*(mu[q] - dfdc - defMap.W[q] - pressure*defMap.divU[q])*fe_values.JxW(q);
 	  for (unsigned int j = 0; j < dim; j++){
 	    Sacado::Fad::DFad<double> Kjj= Kappa[j];
-	    //if (cDof==0) Kjj*= (1.0+0.01*c_j_norm[1][q]);
-	    //else if (cDof==1) Kjj*= (1.0+0.01*c_j_norm[0][q]);
 	    Sacado::Fad::DFad<double> kc_j= c_j[cDof][q][j]*Kjj; // Kjj*C_j
-	    //Sacado::Fad::DFad<double> kc12_j=0.0;
-	    //if (cDof==0) kc12_j= c_j[1][q][j]*Kjj*10; // Kjj*C_j
-	    //if (cDof==1) kc12_j= c_j[0][q][j]*Kjj*10; // Kjj*C_j
 	    R[i] -= fe_values.shape_grad(i, q)[j]*(kc_j)*fe_values.JxW(q);
 	  }
 	}

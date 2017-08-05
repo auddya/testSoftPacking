@@ -17,41 +17,27 @@ namespace softPacking
   template <int dim>
   class InitalConditions: public Function<dim>{
   public:
-    InitalConditions (): Function<dim>(totalDOF){std::srand(5);}
+    unsigned int dof;
+    InitalConditions (unsigned int _dof): Function<dim>(totalDOF), dof(_dof){std::srand(5);}
     void vector_value (const Point<dim>   &p, Vector<double>   &values) const{
       Assert (values.size() == totalDOF, ExcDimensionMismatch (values.size(), totalDOF));
-      //values(dim)=0.63 + 0.02*(0.5 -(double)(std::rand() % 100 )/100.0);
-      values(dim)=0.02 + 0.02*(0.5 -(double)(std::rand() % 100 )/100.0);
-      values(dim+2)=0.02 + 0.02*(0.5 -(double)(std::rand() % 100 )/100.0);
-      std::vector<Point<dim> > cells; //vector of initial cells
-#if DIMS==2
-      Point<dim> cell1(-0*problemWidth/4.0,0*problemWidth/4.0); cells.push_back(cell1);
-      //Point<dim> cell2(problemWidth/4.0,problemWidth/4.0); cells.push_back(cell2);
-      //Point<dim> cell3(problemWidth/4.0,-problemWidth/4.0); cells.push_back(cell3);
-      //Point<dim> cell4(-problemWidth/4.0,-problemWidth/4.0); cells.push_back(cell4);
-#else
-      Point<dim> bubble(0,0,0);
-#endif
-      for (unsigned int i=0;i <cells.size(); i++){
-	if (p.distance(cells[i])<problemWidth/3){
-	  if (p[0]<-0*problemWidth/50.0){
-	    values(dim)=0.99; //c1
-	  }
-	  else if (p[0]>=0*problemWidth/50.0){
-	    values(dim+2)=0.99; //c2
-	  }
-	}	
+      //
+      for (unsigned int i=0;i <CDOFs; i++){
+	values(2*i)=0.02 + 0.02*(0.5 -(double)(std::rand() % 100 )/100.0); //c
+	values(2*i+1)=0.0; //mu
       }
-      values(dim+1)=0.0; //mu1
-      values(dim+3)=0.0; //mu2
+      //initial seed cell
+      if (p.distance(Point<dim>())<problemWidth/10){
+	values(0)=0.99;
+      }
     }
   };
   
   template <int dim>
-  class mechanoChemistry{
+  class multipleCH{
   public:
-    mechanoChemistry ();
-    ~mechanoChemistry ();
+    multipleCH ();
+    ~multipleCH ();
     void run ();
 
   private:
@@ -81,13 +67,13 @@ namespace softPacking
   };
 
   template <int dim>
-  mechanoChemistry<dim>::mechanoChemistry ():
+  multipleCH<dim>::multipleCH ():
     mpi_communicator (MPI_COMM_WORLD),
     triangulation (mpi_communicator,
                    typename Triangulation<dim>::MeshSmoothing
                    (Triangulation<dim>::smoothing_on_refinement |
                     Triangulation<dim>::smoothing_on_coarsening)),
-    fe(FE_Q<dim>(1),totalDOF),
+    fe(FE_Q<dim>(FEOrder),totalDOF),
     dof_handler (triangulation),
     pcout (std::cout, (Utilities::MPI::this_mpi_process(mpi_communicator)== 0)),
     computing_timer (mpi_communicator, pcout, TimerOutput::summary, TimerOutput::wall_times){
@@ -95,11 +81,7 @@ namespace softPacking
     dt=TimeStep; totalTime=TotalTime;
     currentIncrement=0; currentTime=0;
     
-    //nodal Solution names
-    for (unsigned int i=0; i<dim; ++i){
-      nodal_solution_names.push_back("u"); nodal_data_component_interpretation.push_back(DataComponentInterpretation::component_is_part_of_vector);
-    }
-     //nodal Solution names
+    //nodal solution names
     for (unsigned int i=0; i<CDOFs; ++i){
       char buffer[10];
       sprintf(buffer, "c%u", i+1); nodal_solution_names.push_back(buffer); nodal_data_component_interpretation.push_back(DataComponentInterpretation::component_is_scalar);
@@ -108,13 +90,13 @@ namespace softPacking
   }
   
   template <int dim>
-  mechanoChemistry<dim>::~mechanoChemistry (){
+  multipleCH<dim>::~multipleCH (){
     dof_handler.clear ();
   }
 
       //Setup
   template <int dim>
-  void mechanoChemistry<dim>::setup_system (){
+  void multipleCH<dim>::setup_system (){
     TimerOutput::Scope t(computing_timer, "setup");
     dof_handler.distribute_dofs (fe);
     locally_owned_dofs = dof_handler.locally_owned_dofs ();
@@ -134,11 +116,14 @@ namespace softPacking
     constraints.clear ();
     constraints.reinit (locally_relevant_dofs);
     DoFTools::make_hanging_node_constraints (dof_handler, constraints);
+    /*
+    //BC's
     std::vector<bool> uBC (totalDOF, false);
     for (unsigned int i=0; i<dim; i++){
       uBC[i]=true;
     }
     VectorTools::interpolate_boundary_values (dof_handler, 0, ZeroFunction<dim>(totalDOF), constraints, uBC);
+    */
     constraints.close ();
 
     DynamicSparsityPattern dsp (locally_relevant_dofs);
@@ -149,11 +134,11 @@ namespace softPacking
 
   //Assembly
   template <int dim>
-  void mechanoChemistry<dim>::assemble_system (){
+  void multipleCH<dim>::assemble_system (){
     TimerOutput::Scope t(computing_timer, "assembly");
     system_rhs=0.0; system_matrix=0.0;
-    const QGauss<dim>  quadrature_formula(3);
-    const QGauss<dim-1>	face_quadrature_formula (2);
+    const QGauss<dim>  quadrature_formula(FEOrder+1);
+    const QGauss<dim-1>	face_quadrature_formula (FEOrder+1);
     FEValues<dim> fe_values (fe, quadrature_formula,
                              update_values    |  update_gradients |
                              update_quadrature_points |
@@ -179,12 +164,9 @@ namespace softPacking
 	  ULocal[i].diff (i, dofs_per_cell);
 	  ULocalConv[i]= UnGhost(local_dof_indices[i]);
 	}
-	deformationMap<Sacado::Fad::DFad<double>, dim> defMap(n_q_points); 
-	getDeformationMap<Sacado::Fad::DFad<double>, dim>(fe_values, 0, ULocal, defMap, currentIteration);
 	Table<1, Sacado::Fad::DFad<double> > R(dofs_per_cell); 
 	for (unsigned int i=0; i<dofs_per_cell; ++i) {R[i]=0.0;}
-	residualForChemo(fe_values, dim, fe_face_values, cell, dt, ULocal, ULocalConv, R, currentTime, totalTime, defMap);
-	residualForMechanics(fe_values, 0, ULocal, ULocalConv, R, defMap, cell);
+	residualForChemo(fe_values, 0, fe_face_values, cell, dt, ULocal, ULocalConv, R, currentTime, totalTime);
 	
 	//Residual(R) and Jacobian(R')
 	for (unsigned int i=0; i<dofs_per_cell; ++i) {
@@ -204,7 +186,7 @@ namespace softPacking
 
   //Solve
   template <int dim>
-  void mechanoChemistry<dim>::solveIteration(){
+  void multipleCH<dim>::solveIteration(){
     TimerOutput::Scope t(computing_timer, "solve");
     LA::MPI::Vector completely_distributed_solution (locally_owned_dofs, mpi_communicator);
     /*    
@@ -240,7 +222,7 @@ namespace softPacking
 
   //Solve
   template <int dim>
-  void mechanoChemistry<dim>::solve(){
+  void multipleCH<dim>::solve(){
     double res=1, tol=1.0e-8, abs_tol=1.0e-14, initial_norm=0, current_norm=0;
     double machineEPS=1.0e-15;
     currentIteration=0;
@@ -264,7 +246,7 @@ namespace softPacking
   
   //Error estimates
   template <int dim>
-  void mechanoChemistry<dim>::refine_grid (){
+  void multipleCH<dim>::refine_grid (){
     TimerOutput::Scope t(computing_timer, "refine");
     Vector<float> estimated_error_per_cell (triangulation.n_active_cells());
     KellyErrorEstimator<dim>::estimate (dof_handler,
@@ -281,12 +263,11 @@ namespace softPacking
 
   //Output
   template <int dim>
-  void mechanoChemistry<dim>::output_results (const unsigned int cycle) {
+  void multipleCH<dim>::output_results (const unsigned int cycle) {
     TimerOutput::Scope t(computing_timer, "output");
     DataOut<dim> data_out;
     data_out.attach_dof_handler (dof_handler);
     data_out.add_data_vector (UnGhost, nodal_solution_names, DataOut<dim>::type_dof_data, nodal_data_component_interpretation);    
-    //data_out.add_data_vector (locally_relevant_solution, "u");
 
     Vector<float> subdomain (triangulation.n_active_cells());
     for (unsigned int i=0; i<subdomain.size(); ++i)
@@ -321,7 +302,7 @@ namespace softPacking
 
   //Run
   template <int dim>
-  void mechanoChemistry<dim>::run (){
+  void multipleCH<dim>::run (){
     //setup problem geometry and mesh
     GridGenerator::hyper_cube (triangulation, -problemWidth/2.0, problemWidth/2.0);
     triangulation.refine_global (refinementFactor);
@@ -347,7 +328,7 @@ namespace softPacking
     */
     
     //setup initial conditions
-    VectorTools::interpolate(dof_handler, InitalConditions<dim>(), U); Un=U;
+    VectorTools::interpolate(dof_handler, InitalConditions<dim>(0), U); Un=U;
     //Sync ghost vectors to non-ghost vectors
     UGhost=U;  UnGhost=Un;
     output_results (0);
@@ -371,7 +352,7 @@ int main(int argc, char *argv[]){
       using namespace dealii;
       using namespace softPacking;
       Utilities::MPI::MPI_InitFinalize mpi_initialization(argc, argv, 1);
-      mechanoChemistry<2> problem;
+      multipleCH<2> problem;
       problem.run ();
     }
   catch (std::exception &exc)
