@@ -22,15 +22,28 @@ namespace softPacking
       Assert (values.size() == totalDOF, ExcDimensionMismatch (values.size(), totalDOF));
       //values(dim)=0.63 + 0.02*(0.5 -(double)(std::rand() % 100 )/100.0);
       values(dim)=0.02 + 0.02*(0.5 -(double)(std::rand() % 100 )/100.0);
+      values(dim+2)=0.02 + 0.02*(0.5 -(double)(std::rand() % 100 )/100.0);
+      std::vector<Point<dim> > cells; //vector of initial cells
 #if DIMS==2
-      Point<dim> bubble(0,0);
+      Point<dim> cell1(-0*problemWidth/4.0,0*problemWidth/4.0); cells.push_back(cell1);
+      //Point<dim> cell2(problemWidth/4.0,problemWidth/4.0); cells.push_back(cell2);
+      //Point<dim> cell3(problemWidth/4.0,-problemWidth/4.0); cells.push_back(cell3);
+      //Point<dim> cell4(-problemWidth/4.0,-problemWidth/4.0); cells.push_back(cell4);
 #else
       Point<dim> bubble(0,0,0);
 #endif
-      if (p.distance(bubble)<problemWidth/4){
-	values(dim)=0.99; //c
+      for (unsigned int i=0;i <cells.size(); i++){
+	if (p.distance(cells[i])<problemWidth/3){
+	  if (p[0]<-0*problemWidth/50.0){
+	    values(dim)=0.99; //c1
+	  }
+	  else if (p[0]>=0*problemWidth/50.0){
+	    values(dim+2)=0.99; //c2
+	  }
+	}	
       }
-      values(dim+1)=0.0; //mu
+      values(dim+1)=0.0; //mu1
+      values(dim+3)=0.0; //mu2
     }
   };
   
@@ -74,7 +87,7 @@ namespace softPacking
                    typename Triangulation<dim>::MeshSmoothing
                    (Triangulation<dim>::smoothing_on_refinement |
                     Triangulation<dim>::smoothing_on_coarsening)),
-    fe(FE_Q<dim>(1),DIMS+2),
+    fe(FE_Q<dim>(1),totalDOF),
     dof_handler (triangulation),
     pcout (std::cout, (Utilities::MPI::this_mpi_process(mpi_communicator)== 0)),
     computing_timer (mpi_communicator, pcout, TimerOutput::summary, TimerOutput::wall_times){
@@ -86,8 +99,12 @@ namespace softPacking
     for (unsigned int i=0; i<dim; ++i){
       nodal_solution_names.push_back("u"); nodal_data_component_interpretation.push_back(DataComponentInterpretation::component_is_part_of_vector);
     }
-    nodal_solution_names.push_back("c"); nodal_data_component_interpretation.push_back(DataComponentInterpretation::component_is_scalar);
-    nodal_solution_names.push_back("mu"); nodal_data_component_interpretation.push_back(DataComponentInterpretation::component_is_scalar);
+     //nodal Solution names
+    for (unsigned int i=0; i<CDOFs; ++i){
+      char buffer[10];
+      sprintf(buffer, "c%u", i+1); nodal_solution_names.push_back(buffer); nodal_data_component_interpretation.push_back(DataComponentInterpretation::component_is_scalar);
+      sprintf(buffer, "mu%u", i+1); nodal_solution_names.push_back(buffer); nodal_data_component_interpretation.push_back(DataComponentInterpretation::component_is_scalar);
+    }
   }
   
   template <int dim>
@@ -117,7 +134,10 @@ namespace softPacking
     constraints.clear ();
     constraints.reinit (locally_relevant_dofs);
     DoFTools::make_hanging_node_constraints (dof_handler, constraints);
-    std::vector<bool> uBC (totalDOF, true); uBC[totalDOF-1]=false; uBC[totalDOF]=false; 
+    std::vector<bool> uBC (totalDOF, false);
+    for (unsigned int i=0; i<dim; i++){
+      uBC[i]=true;
+    }
     VectorTools::interpolate_boundary_values (dof_handler, 0, ZeroFunction<dim>(totalDOF), constraints, uBC);
     constraints.close ();
 
@@ -163,9 +183,8 @@ namespace softPacking
 	getDeformationMap<Sacado::Fad::DFad<double>, dim>(fe_values, 0, ULocal, defMap, currentIteration);
 	Table<1, Sacado::Fad::DFad<double> > R(dofs_per_cell); 
 	for (unsigned int i=0; i<dofs_per_cell; ++i) {R[i]=0.0;}
-	dealii::Table<1,double> c_conv(n_q_points);
-	residualForChemo(fe_values, dim, fe_face_values, cell, dt, ULocal, ULocalConv, R, currentTime, totalTime, c_conv, defMap);
-	residualForMechanics(fe_values, 0, ULocal, ULocalConv, R, defMap, cell, c_conv);
+	residualForChemo(fe_values, dim, fe_face_values, cell, dt, ULocal, ULocalConv, R, currentTime, totalTime, defMap);
+	residualForMechanics(fe_values, 0, ULocal, ULocalConv, R, defMap, cell);
 	
 	//Residual(R) and Jacobian(R')
 	for (unsigned int i=0; i<dofs_per_cell; ++i) {

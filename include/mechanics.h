@@ -69,7 +69,7 @@ void getDeformationMap(FEValues<dim>& fe_values, unsigned int DOF, Table<1, T>& 
 
 //Mechanics implementation
 template <class T, int dim>
-  void evaluateStress(const FEValues<dim>& fe_values,const unsigned int DOF, const Table<1, T>& ULocal, Table<3, T>& P, const deformationMap<T, dim>& defMap, typename DoFHandler<dim>::active_cell_iterator& cell, dealii::Table<1,double>& c_conv){
+  void evaluateStress(const FEValues<dim>& fe_values,const unsigned int DOF, const Table<1, T>& ULocal, Table<3, T>& P, const deformationMap<T, dim>& defMap, typename DoFHandler<dim>::active_cell_iterator& cell){
   unsigned int n_q_points= fe_values.n_quadrature_points;
   
   //Loop over quadrature points
@@ -82,7 +82,7 @@ template <class T, int dim>
       }
     }
     //E
-    double Ec=c_conv[q]*LatticeConstantChangeStrain;
+    double Ec=0.0; //c_conv[q]*LatticeConstantChangeStrain;
     Table<2, Sacado::Fad::DFad<double> > E (dim, dim);
     for (unsigned int i=0; i<dim; ++i){
       for (unsigned int j=0; j<dim; ++j){
@@ -140,16 +140,16 @@ template <class T, int dim>
 
 //Mechanics residual implementation
 template <int dim>
-void residualForMechanics(FEValues<dim>& fe_values, unsigned int DOF, Table<1, Sacado::Fad::DFad<double> >& ULocal, Table<1, double>& ULocalConv, Table<1, Sacado::Fad::DFad<double> >& R, deformationMap<Sacado::Fad::DFad<double>, dim>& defMap, typename DoFHandler<dim>::active_cell_iterator& cell, dealii::Table<1,double>& c_conv){
+void residualForMechanics(FEValues<dim>& fe_values, unsigned int DOF, Table<1, Sacado::Fad::DFad<double> >& ULocal, Table<1, double>& ULocalConv, Table<1, Sacado::Fad::DFad<double> >& R, deformationMap<Sacado::Fad::DFad<double>, dim>& defMap, typename DoFHandler<dim>::active_cell_iterator& cell){
   unsigned int dofs_per_cell= fe_values.dofs_per_cell;
   unsigned int n_q_points= fe_values.n_quadrature_points;
 
-  double pressure=1.0; //PressureValue; //Just for debugging, considering constant pressure
+  double pressure=0.0; //PressureValue; //Just for debugging, considering constant pressure
   
   //Temporary arrays
   Table<3,Sacado::Fad::DFad<double> > P (n_q_points, dim, dim);
   //evaluate mechanics
-  evaluateStress<Sacado::Fad::DFad<double>, dim>(fe_values, DOF, ULocal, P, defMap, cell, c_conv);
+  evaluateStress<Sacado::Fad::DFad<double>, dim>(fe_values, DOF, ULocal, P, defMap, cell);
   
   //evaluate Residual
   for (unsigned int i=0; i<dofs_per_cell; ++i) {

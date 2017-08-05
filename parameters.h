@@ -1,9 +1,10 @@
 //problem geometry, mesh control
 #define DIMS 2
-#define totalDOF (DIMS+2) //do not change this value
+#define CDOFs 2
+#define totalDOF (DIMS+2*CDOFs) //do not change this value
 #define problemWidth 1.0
 #define ELLIPSEFACTOR 1.0
-#define refinementFactor 7
+#define refinementFactor 6
 
 //helium properties
 #define Source -1.0e3 //Helium production rate
@@ -16,14 +17,12 @@
 #define PressureValue 0.001 //Just for debugging, considering constant pressure
 
 //phase field properties
-#define PIval 3.14159265
-#define dFdC  2*PIval*std::cos((4*c[q]-1.0)*PIval*0.5) //400*c[q]*(c[q]-1.0)*(c[q]-0.5)
+#define dFdC  16*c[cDof][q]*(c[cDof][q]-1.0)*(c[cDof][q]-0.5) 
 #define Mobility 1.0
 
-
 //time step controls
-#define TimeStep 5.0e-6
-#define TotalTime 100*TimeStep
+#define TimeStep 1.0e-3
+#define TotalTime 200*TimeStep
 #define timeForEquilibrium 10*TimeStep
 
 //output controls
