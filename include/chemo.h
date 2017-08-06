@@ -5,7 +5,7 @@
 
 //Mechanics residual implementation
 template <int dim>
-void residualForChemo(FEValues<dim>& fe_values, unsigned int DOF, FEFaceValues<dim>& fe_face_values, const typename DoFHandler<dim>::active_cell_iterator &cell, double dt, dealii::Table<1, Sacado::Fad::DFad<double> >& ULocal, dealii::Table<1, double>& ULocalConv, dealii::Table<1, Sacado::Fad::DFad<double> >& R, double currentTime, double totalTime){
+void residualForChemo(FEValues<dim>& fe_values, unsigned int DOF, FEFaceValues<dim>& fe_face_values, const typename DoFHandler<dim>::active_cell_iterator &cell, double dt, dealii::Table<1, Sacado::Fad::DFad<double> >& ULocal, dealii::Table<1, double>& ULocalConv, dealii::Table<1, Sacado::Fad::DFad<double> >& R, double currentTime, double totalTime, const std::vector<double>& cellMassRatio, const unsigned int nextAvailableField){
   unsigned int dofs_per_cell= fe_values.dofs_per_cell;
   unsigned int n_q_points= fe_values.n_quadrature_points;
 
@@ -53,7 +53,16 @@ void residualForChemo(FEValues<dim>& fe_values, unsigned int DOF, FEFaceValues<d
 	  R[i] +=  (1/dt)*fe_values.shape_value(i, q)*(c[cDof][q]-c_conv[cDof][q])*fe_values.JxW(q);
 	  if (currentTime>timeForEquilibrium){
 	    if (c_conv[cDof][q]>0.99) {
-	      R[i] +=  -fe_values.shape_value(i, q)*Source*fe_values.JxW(q); //source term
+	      double sourceValue=Source/2.0;
+	      double ratio=cellMassRatio[cDof];
+	      if (nextAvailableField<CDOFs){
+		if (ratio>2.1) sourceValue*=0.0;
+		else if (ratio<1.0) sourceValue*=2.0;
+	      }
+	      else{
+		if (ratio>1.1) sourceValue*=0.0;
+	      }
+	      R[i] +=  -fe_values.shape_value(i, q)*sourceValue*fe_values.JxW(q); //source term
 	    }
 	  }
 	  for (unsigned int j = 0; j < dim; j++){
@@ -68,13 +77,18 @@ void residualForChemo(FEValues<dim>& fe_values, unsigned int DOF, FEFaceValues<d
 	    if (cDof2!=cDof) dfdc += 200*c[cDof][q]*c[cDof2][q]*c[cDof2][q];
 	  }
 	  //add surface buffer zone
-	  if (c[cDof][q].val()>0.1 || true){
-	    MappingQ1<dim,dim> quadMap;
-	    Point<dim> quadPoint(quadMap.transform_unit_to_real_cell(cell, fe_values.get_quadrature().point(q)));
-	    if (((quadPoint[0]<(-problemWidth/2+bufferSpace)) || (quadPoint[0]> (problemWidth/2-bufferSpace)) || (quadPoint[1]<(-problemWidth/2+bufferSpace)) || (quadPoint[1]>(problemWidth/2-bufferSpace)))){
-	      dfdc += 200*c[cDof][q]*1.0*1.0;
-	    }
+	  if (cell->at_boundary()){
+	    dfdc += 200*c[cDof][q]*1.0*1.0;
 	  }
+	  /*
+	  if (c[cDof][q].val()>0.1 || true){
+	  MappingQ1<dim,dim> quadMap;
+	  Point<dim> quadPoint(quadMap.transform_unit_to_real_cell(cell, fe_values.get_quadrature().point(q)));
+	  if (((quadPoint[0]<(-problemWidth/2+bufferSpace)) || (quadPoint[0]> (problemWidth/2-bufferSpace)) || (quadPoint[1]<(-problemWidth/2+bufferSpace)) || (quadPoint[1]>(problemWidth/2-bufferSpace)))){
+	  dfdc += 200*c[cDof][q]*1.0*1.0;
+	  }
+	  }
+	  */
 	  //
 	  R[i] +=  fe_values.shape_value(i, q)*(mu[cDof][q] - dfdc)*fe_values.JxW(q);
 	  //R[i] +=  fe_values.shape_value(i, q)*(mu[q] - dfdc - defMap.W[q] - pressure*defMap.divU[q])*fe_values.JxW(q);

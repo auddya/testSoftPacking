@@ -27,7 +27,7 @@ namespace softPacking
 	values(2*i+1)=0.0; //mu
       }
       //initial seed cell
-      if (p.distance(Point<dim>())<problemWidth/10){
+      if (p.distance(Point<dim>())<problemWidth/15){
 	values(0)=0.99;
       }
     }
@@ -70,6 +70,7 @@ namespace softPacking
 
     //cell division variables
     unsigned int nextAvailableField;
+    std::vector<double> cellMassRatio;
     std::vector<double> cellCenter;
   };
 
@@ -84,7 +85,7 @@ namespace softPacking
     dof_handler (triangulation),
     pcout (std::cout, (Utilities::MPI::this_mpi_process(mpi_communicator)== 0)),
     computing_timer (mpi_communicator, pcout, TimerOutput::summary, TimerOutput::wall_times),
-    cellCenter(dim+1){
+    cellMassRatio(CDOFs, 0.0), cellCenter(dim+1){
     //initial randon generator
     std::srand(1);
     
@@ -182,7 +183,7 @@ namespace softPacking
 	}
 	Table<1, Sacado::Fad::DFad<double> > R(dofs_per_cell); 
 	for (unsigned int i=0; i<dofs_per_cell; ++i) {R[i]=0.0;}
-	residualForChemo(fe_values, 0, fe_face_values, cell, dt, ULocal, ULocalConv, R, currentTime, totalTime);
+	residualForChemo(fe_values, 0, fe_face_values, cell, dt, ULocal, ULocalConv, R, currentTime, totalTime, cellMassRatio, nextAvailableField);
 	
 	//Residual(R) and Jacobian(R')
 	for (unsigned int i=0; i<dofs_per_cell; ++i) {
@@ -370,7 +371,12 @@ namespace softPacking
 
     //get random angle for cell division (later be made an explicit function of the underlying mechanics and/or chemical signaling)
     const double pi = std::acos(-1);
-    double theta= (pi/180)*(std::rand() % 180);
+    //double theta= (pi/180)*(std::rand() % 180);
+    double theta=(pi/180)*45;
+    if (nextAvailableField>=2) theta=(pi/180)*135;
+    if (nextAvailableField>=4) theta=(pi/180)*45;
+    if (nextAvailableField>=8) theta=(pi/180)*135;
+    if (nextAvailableField>=16) theta=(pi/180)*45;
     sprintf(buffer, "division along %5.1f degree axis\n", 180*theta/pi); pcout << buffer;
 
     //split cell field into two half cell fields
@@ -441,8 +447,28 @@ namespace softPacking
   template <int dim>
   void multipleCH<dim>::run (){
     //setup problem geometry and mesh
+#ifdef ellipticMesh
+    GridGenerator::hyper_ball(triangulation, Point<dim>(), (double)problemWidth/2.0);
+    static const HyperBallBoundary<dim> boundary(Point<dim>(), (double)problemWidth/2.0);
+    triangulation.set_boundary (0, boundary);
+    triangulation.refine_global (refinementFactor);
+    //scale the geometry to make the circle into an ellipse
+    std::set<unsigned int> tempSet;
+    typename parallel::distributed::Triangulation<dim>::active_cell_iterator cell = triangulation.begin_active(), endc = triangulation.end();
+    for (;cell!=endc; ++cell){
+      if (cell->is_locally_owned()){
+	for (unsigned int i=0; i<std::pow(2,dim); ++i){
+	  if (tempSet.count(cell->vertex_index(i))== 0) {
+	    cell->vertex(i)[1]=cell->vertex(i)[1]*ellipticityFactor;
+	    tempSet.insert(cell->vertex_index(i));
+	  }
+	}
+      }
+    }
+#else
     GridGenerator::hyper_cube (triangulation, -problemWidth/2.0, problemWidth/2.0);
     triangulation.refine_global (refinementFactor);
+#endif
     setup_system ();
     pcout << "   Number of active cells:       "
 	  << triangulation.n_global_active_cells()
@@ -479,11 +505,11 @@ namespace softPacking
       solve();
       //check for cell division
       for (unsigned int cells=0; cells<nextAvailableField; cells++){
-	double cellMass=computeMass(cells);
+	double cellMass=computeMass(cells); cellMassRatio[cells]=cellMass/initialCellMass;
 	if ((cellMass>2*initialCellMass)){
 	  if (nextAvailableField<CDOFs){
 	    transferSolution(cells);
-	    dt=TimeStep*0.00001; incCounter=true; counter=0;
+	    dt=TimeStep*1.0e-6; incCounter=true; counter=0;
 	  }
 	  else{
 	    pcout << "should divide now, but no empty fields available. skipping division \n";
@@ -495,9 +521,9 @@ namespace softPacking
       pcout << std::endl;
       if (incCounter){
 	counter++;
-	if ((counter>5)){
+	if ((counter>3)){
 	  if (dt<TimeStep){
-	    dt=TimeStep*0.00001*std::pow(counter-5.0,5);
+	    dt=TimeStep*1.0e-6*std::pow(counter-3,6);
 	  }
 	  else{
 	    incCounter=false;

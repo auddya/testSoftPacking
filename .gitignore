@@ -37,6 +37,7 @@ CMakeFiles/
 Makefile
 main
 *#main*
+results*
 
 #Tex files
 *.aux

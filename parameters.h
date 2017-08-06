@@ -2,15 +2,17 @@
 #define DIMS 2
 #define FEOrder 1
 #define problemWidth 1.0
-#define bufferSpace problemWidth/20.0
-#define refinementFactor 6
+#define ellipticMesh
+#define ellipticityFactor 0.5
+//#define bufferSpace problemWidth/20.0
+#define refinementFactor 4
 
 //order parameter controls
-#define CDOFs 4
+#define CDOFs 24
 #define totalDOF (2*CDOFs) 
 
 //PF properties
-#define Source 1.0e2 //species production rate
+#define Source 5.0e2 //species production rate
 #define InterfaceEnergyParameter {1.0e-3, 1.0e-3, 1.0e-3} //{Kx, Ky, Kz}
 
 //mechanics properties
@@ -22,8 +24,8 @@
 #define Mobility 1.0
 
 //time step controls
-#define TimeStep 1.0e-3
-#define TotalTime 200*TimeStep
+#define TimeStep 5.0e-4
+#define TotalTime 500*TimeStep
 #define timeForEquilibrium 10*TimeStep
 
 //output controls
