@@ -2,11 +2,11 @@
 #define DIMS 2
 #define FEOrder 1
 #define problemWidth 1.0
-#define bufferSpace problemWidth/40.0
+#define bufferSpace problemWidth/20.0
 #define refinementFactor 6
 
 //order parameter controls
-#define CDOFs 2
+#define CDOFs 4
 #define totalDOF (2*CDOFs) 
 
 //PF properties

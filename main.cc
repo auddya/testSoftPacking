@@ -18,7 +18,7 @@ namespace softPacking
   class InitalConditions: public Function<dim>{
   public:
     unsigned int dof;
-    InitalConditions (unsigned int _dof): Function<dim>(totalDOF), dof(_dof){std::srand(5);}
+    InitalConditions (unsigned int _dof): Function<dim>(totalDOF), dof(_dof){}
     void vector_value (const Point<dim>   &p, Vector<double>   &values) const{
       Assert (values.size() == totalDOF, ExcDimensionMismatch (values.size(), totalDOF));
       //
@@ -47,12 +47,15 @@ namespace softPacking
     void solve ();
     void refine_grid ();
     void output_results (const unsigned int cycle);
+    double computeMass (const unsigned int cdof);
+    void transferSolution (const unsigned int cdof);
     MPI_Comm                                  mpi_communicator;
     parallel::distributed::Triangulation<dim> triangulation;
     FESystem<dim>                             fe;
     DoFHandler<dim>                           dof_handler;
     IndexSet                                  locally_owned_dofs;
     IndexSet                                  locally_relevant_dofs;
+    std::map<types::global_dof_index,Point<dim> > supportPoints;
     ConstraintMatrix                          constraints;
     LA::MPI::SparseMatrix                     system_matrix;
     LA::MPI::Vector                           locally_relevant_solution, U, Un, UGhost, UnGhost, dU;
@@ -64,6 +67,10 @@ namespace softPacking
     unsigned int currentIncrement, currentIteration;
     double totalTime, currentTime, dt;
     std::vector<std::string> nodal_solution_names; std::vector<DataComponentInterpretation::DataComponentInterpretation> nodal_data_component_interpretation;
+
+    //cell division variables
+    unsigned int nextAvailableField;
+    std::vector<double> cellCenter;
   };
 
   template <int dim>
@@ -76,10 +83,17 @@ namespace softPacking
     fe(FE_Q<dim>(FEOrder),totalDOF),
     dof_handler (triangulation),
     pcout (std::cout, (Utilities::MPI::this_mpi_process(mpi_communicator)== 0)),
-    computing_timer (mpi_communicator, pcout, TimerOutput::summary, TimerOutput::wall_times){
+    computing_timer (mpi_communicator, pcout, TimerOutput::summary, TimerOutput::wall_times),
+    cellCenter(dim+1){
+    //initial randon generator
+    std::srand(1);
+    
     //solution variables
     dt=TimeStep; totalTime=TotalTime;
     currentIncrement=0; currentTime=0;
+
+    //set nextAvailableField
+    nextAvailableField=1;
     
     //nodal solution names
     for (unsigned int i=0; i<CDOFs; ++i){
@@ -104,6 +118,8 @@ namespace softPacking
                                              locally_relevant_dofs);
     
     locally_relevant_solution.reinit (locally_owned_dofs, locally_relevant_dofs, mpi_communicator);
+    DoFTools::map_dofs_to_support_points(MappingQ1<dim,dim>(), dof_handler, supportPoints);
+    
     //Non-ghost vectors
     system_rhs.reinit (locally_owned_dofs, mpi_communicator);
     U.reinit (locally_owned_dofs, mpi_communicator);
@@ -300,6 +316,127 @@ namespace softPacking
     }
   }
 
+  //compute mass of each cell
+  template <int dim>
+  double multipleCH<dim>::computeMass (const unsigned int cdof){
+    QGauss<dim>  quadrature(FEOrder+1);
+    FEValues<dim> fe_values (fe, quadrature, update_values | update_JxW_values);
+    const unsigned int n_q_points= fe_values.n_quadrature_points;
+    const unsigned int   dofs_per_cell = fe.dofs_per_cell;
+    std::vector<unsigned int> local_dof_indices (dofs_per_cell);
+    double cellMass= 0;
+    std::vector<Vector<double> >   values;
+    for (unsigned int q_point = 0; q_point < n_q_points; ++q_point){
+      values.push_back(Vector<double>(2*CDOFs)); //fill the empty values vector with a Vector of size 2*CDOFs for values of each of the components
+    }
+    
+    //loop over cells
+    for (unsigned int i=0; i<dim+1; i++) cellCenter[i]=0.0;
+    //
+    typename DoFHandler<dim>::active_cell_iterator cell = dof_handler.begin_active(), endc = dof_handler.end();
+    for (; cell!=endc; ++cell){
+      if (cell->is_locally_owned()){
+	fe_values.reinit (cell);
+	cell->get_dof_indices (local_dof_indices);
+	fe_values.get_function_values(Un, values); //get the values for this cell
+	//now loop over quadrature points in each cell
+	for (unsigned int q_point = 0; q_point < n_q_points; ++q_point){
+	  MappingQ1<dim,dim> quadMap;
+	  Point<dim> quadPoint(quadMap.transform_unit_to_real_cell(cell, fe_values.get_quadrature().point(q_point)));
+	  double cval=values[q_point][2*cdof];  
+	  if (cval>=0.05){
+	    cellMass += cval*fe_values.JxW(q_point);
+	    for (unsigned int i=0; i<dim; i++) cellCenter[i]+=quadPoint[i]*cval;
+	    cellCenter[dim]+=1;
+	  }
+	}
+      }
+    }
+    //accumulate cell center data across all cores
+    cellMass= Utilities::MPI::sum(cellMass, mpi_communicator);
+    Utilities::MPI::sum(cellCenter, mpi_communicator, cellCenter);
+    for (unsigned int i=0; i<dim; i++) cellCenter[i]/=cellCenter[dim];
+    char buffer[100];
+    sprintf(buffer, "cell %u is located at (%5.2e, %5.2e) with mass: %6.3e\n", cdof, cellCenter[0], cellCenter[1], cellMass); pcout << buffer;
+    //
+    return cellMass;
+  }
+
+  //post division, transfer half cell from one order parameter to next free order parameter
+  template <int dim>
+  void multipleCH<dim>::transferSolution (const unsigned int cdof){
+    char buffer[100];
+    sprintf(buffer, "***cell %u has doubled in mass. Dividing into cell %u and cell %u***\n", cdof, cdof, nextAvailableField); pcout << buffer;
+
+    //get random angle for cell division (later be made an explicit function of the underlying mechanics and/or chemical signaling)
+    const double pi = std::acos(-1);
+    double theta= (pi/180)*(std::rand() % 180);
+    sprintf(buffer, "division along %5.1f degree axis\n", 180*theta/pi); pcout << buffer;
+
+    //split cell field into two half cell fields
+    Point<dim> cellCenterPoint(cellCenter[0],cellCenter[1]);
+    Point<dim> u(std::cos(theta), std::sin(theta)); //cell division axis
+    
+    //set the dof values of both vectors accordingly
+    QGauss<dim>  quadrature(FEOrder+1);
+    FEValues<dim> fe_values (fe, quadrature, update_values | update_JxW_values);
+    const unsigned int   dofs_per_cell = fe.dofs_per_cell;
+    std::vector<unsigned int> local_dof_indices (dofs_per_cell);
+    unsigned int c1, mu1, c2, mu2;
+    std::vector<unsigned int> indexc1, indexmu1, indexc2, indexmu2;
+    std::vector<double>       valuec1, valuemu1, valuec2, valuemu2;
+    
+    typename DoFHandler<dim>::active_cell_iterator cell = dof_handler.begin_active(), endc = dof_handler.end();
+    for (; cell!=endc; ++cell){
+      if (cell->is_locally_owned()){
+	fe_values.reinit (cell);
+	cell->get_dof_indices (local_dof_indices);
+	for (unsigned int i=0; i<dofs_per_cell; ++i) {
+	  const unsigned int id1 = fe_values.get_fe().system_to_component_index(i).first;
+	  const unsigned int shapeID1= fe_values.get_fe().system_to_component_index(i).second;
+	  //get id of mu1
+	  if (id1==2*cdof){
+	    c1=local_dof_indices[i];
+	    bool foundmu1=false, foundc2=false, foundmu2=false;
+	    for (unsigned int j=0; j<dofs_per_cell; ++j) {
+	      if (fe_values.get_fe().system_to_component_index(j).second==shapeID1){
+		const unsigned int id2 = fe_values.get_fe().system_to_component_index(j).first;
+		if (id2==(2*cdof+1)) {mu1=local_dof_indices[j]; foundmu1=true;}
+		if (id2==(2*nextAvailableField))   {c2 =local_dof_indices[j]; foundc2=true;}
+		if (id2==(2*nextAvailableField+1)) {mu2=local_dof_indices[j]; foundmu2=true;}
+	      }
+	    }
+	    if (!foundmu1 || !foundc2 || !foundmu2){std::cout << "ERROR: Couldnot find indices corresponding to mu1/c1/c2. \n"; exit(-1);}
+	    //pcout << shapeID1 << " : " << c1 << " " << mu1 << " " << c2 << " " << mu2 << "\n";
+	    //now find if nodal values should be switched
+	    Point<dim> n1=supportPoints.find(local_dof_indices[i])->second;
+	    Point<dim> v = n1; v-=cellCenterPoint; // vector connecting cell center to this node
+	    double uXv= u[0]*v[1] - v[0]*u[1]; // Z component of u X v cross product
+	    //copy points with +ve cross product (right side of cell division axis) onto new cell field
+	    if (uXv>0.0){
+	      /*if (locally_owned_dofs.is_element(c2)) {Un(c2)=Un(c1);}
+	      if (locally_owned_dofs.is_element(mu2)) {Un(mu2)=Un(mu1);}
+	      if (locally_owned_dofs.is_element(c1)) {Un(c1)=0.0;}
+	      if (locally_owned_dofs.is_element(mu1)) {Un(mu1)=0.0;}
+	      */
+	      indexc1.push_back(c1); valuec1.push_back(0.02 + 0.02*(0.5 -(double)(std::rand() % 100 )/100.0));
+	      indexmu1.push_back(mu1); valuemu1.push_back(0.0);
+	      indexc2.push_back(c2); valuec2.push_back(Un(c1));
+	      indexmu2.push_back(mu2); valuemu2.push_back(0.0); 
+	    }
+	  }
+	}
+      }
+      //pcout << "\n";
+    }
+    Un.set(indexc1, valuec1);
+    Un.set(indexmu1, valuemu1);
+    Un.set(indexc2, valuec2);
+    Un.set(indexmu2, valuemu2);
+    Un.compress(VectorOperation::insert);
+    U=Un; UnGhost=Un; nextAvailableField++;
+  }
+  
   //Run
   template <int dim>
   void multipleCH<dim>::run (){
@@ -333,13 +470,41 @@ namespace softPacking
     UGhost=U;  UnGhost=Un;
     output_results (0);
 
+    double initialCellMass= computeMass(0);
     //Time stepping
     currentIncrement=0;
+    unsigned int counter=0; bool incCounter=false;
     for (currentTime=0; currentTime<=totalTime; currentTime+=dt){
       currentIncrement++;
       solve();
+      //check for cell division
+      for (unsigned int cells=0; cells<nextAvailableField; cells++){
+	double cellMass=computeMass(cells);
+	if ((cellMass>2*initialCellMass)){
+	  if (nextAvailableField<CDOFs){
+	    transferSolution(cells);
+	    dt=TimeStep*0.00001; incCounter=true; counter=0;
+	  }
+	  else{
+	    pcout << "should divide now, but no empty fields available. skipping division \n";
+	  }
+	}
+      }
+      
       output_results(currentIncrement);
       pcout << std::endl;
+      if (incCounter){
+	counter++;
+	if ((counter>5)){
+	  if (dt<TimeStep){
+	    dt=TimeStep*0.00001*std::pow(counter-5.0,5);
+	  }
+	  else{
+	    incCounter=false;
+	  }
+	}
+      }
+	
     }
     computing_timer.print_summary ();
   }
