@@ -5,10 +5,10 @@
 #define ellipticMesh
 #define ellipticityFactor 0.5
 //#define bufferSpace problemWidth/20.0
-#define refinementFactor 4
+#define refinementFactor 5
 
 //order parameter controls
-#define CDOFs 24
+#define CDOFs 8 //number of cells.
 #define totalDOF (2*CDOFs) 
 
 //PF properties
