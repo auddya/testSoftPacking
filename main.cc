@@ -339,13 +339,13 @@ namespace softPacking
       if (cell->is_locally_owned()){
 	fe_values.reinit (cell);
 	cell->get_dof_indices (local_dof_indices);
-	fe_values.get_function_values(Un, values); //get the values for this cell
+	fe_values.get_function_values(UnGhost, values); //get the values for this cell
 	//now loop over quadrature points in each cell
 	for (unsigned int q_point = 0; q_point < n_q_points; ++q_point){
 	  MappingQ1<dim,dim> quadMap;
 	  Point<dim> quadPoint(quadMap.transform_unit_to_real_cell(cell, fe_values.get_quadrature().point(q_point)));
 	  double cval=values[q_point][2*cdof];  
-	  if (cval>=0.05){
+	  if (cval>=0.8){
 	    cellMass += cval*fe_values.JxW(q_point);
 	    for (unsigned int i=0; i<dim; i++) cellCenter[i]+=quadPoint[i]*cval;
 	    cellCenter[dim]+=1;
@@ -427,7 +427,7 @@ namespace softPacking
 	      */
 	      indexc1.push_back(c1); valuec1.push_back(0.02 + 0.02*(0.5 -(double)(std::rand() % 100 )/100.0));
 	      indexmu1.push_back(mu1); valuemu1.push_back(0.0);
-	      indexc2.push_back(c2); valuec2.push_back(Un(c1));
+	      indexc2.push_back(c2); valuec2.push_back(UnGhost(c1));
 	      indexmu2.push_back(mu2); valuemu2.push_back(0.0); 
 	    }
 	  }

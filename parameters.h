@@ -8,7 +8,7 @@
 #define refinementFactor 5
 
 //order parameter controls
-#define CDOFs 8 //number of cells.
+#define CDOFs 12
 #define totalDOF (2*CDOFs) 
 
 //PF properties
