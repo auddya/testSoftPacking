@@ -479,15 +479,15 @@ namespace softPacking
 	  const unsigned int id1 = fe_values.get_fe().system_to_component_index(i).first;
 	  const unsigned int shapeID1= fe_values.get_fe().system_to_component_index(i).second;
 	  //get id of mu1
-	  if (id1==2*cdof){
+	  if (id1==2*allottedOP[cdof]){
 	    c1=local_dof_indices[i];
 	    bool foundmu1=false, foundc2=false, foundmu2=false;
 	    for (unsigned int j=0; j<dofs_per_cell; ++j) {
 	      if (fe_values.get_fe().system_to_component_index(j).second==shapeID1){
 		const unsigned int id2 = fe_values.get_fe().system_to_component_index(j).first;
-		if (id2==(2*cdof+1)) {mu1=local_dof_indices[j]; foundmu1=true;}
-		if (id2==(2*nextAvailableField))   {c2 =local_dof_indices[j]; foundc2=true;}
-		if (id2==(2*nextAvailableField+1)) {mu2=local_dof_indices[j]; foundmu2=true;}
+		if (id2==(2*allottedOP[cdof]+1)) {mu1=local_dof_indices[j]; foundmu1=true;}
+		if (id2==(2*allottedOP[nextAvailableField]))   {c2 =local_dof_indices[j]; foundc2=true;}
+		if (id2==(2*allottedOP[nextAvailableField]+1)) {mu2=local_dof_indices[j]; foundmu2=true;}
 	      }
 	    }
 	    if (!foundmu1 || !foundc2 || !foundmu2){std::cout << "ERROR: Couldnot find indices corresponding to mu1/c1/c2. \n"; exit(-1);}
@@ -578,7 +578,7 @@ namespace softPacking
 
     //return;
     double initialCellMass= computeMass(0); //check this function //Works!
-    return;
+    //return;
     //Time stepping
     currentIncrement=0;
     unsigned int counter=0; bool incCounter=false;
@@ -588,7 +588,6 @@ namespace softPacking
       //check for cell division
       for (unsigned int cells=0; cells<nextAvailableField; cells++){ //for(unsigned int cells=0; cells<cellSize; cells++){
 	double cellMass=computeMass(cells); cellMassRatio[cells]=cellMass/initialCellMass; //double cellMass = computeMass(cells); cellMassRatio[cells] = cellMass/initialCellMass
-	return;
 	if ((cellMass>2*initialCellMass)){ //if(cellMass>2*initialCellMass)
 	  activeParameter(cells);               //activeParameter(cells);
 	  if (nextAvailableField<cellSize){ 

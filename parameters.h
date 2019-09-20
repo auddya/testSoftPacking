@@ -13,7 +13,7 @@
 #define totalDOF (2*CDOFs) 
 
 //PF properties
-#define Source 5.0e2 //species production rate
+#define Source 35.0e2 //species production rate
 #define InterfaceEnergyParameter {1.0e-3, 1.0e-3, 1.0e-3} //{Kx, Ky, Kz}
 
 //mechanics properties
