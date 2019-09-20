@@ -8,7 +8,8 @@
 #define refinementFactor 5
 
 //order parameter controls
-#define CDOFs 12
+#define cellSize 100
+#define CDOFs 5
 #define totalDOF (2*CDOFs) 
 
 //PF properties

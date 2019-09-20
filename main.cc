@@ -12,17 +12,17 @@
 namespace softPacking
 {
   using namespace dealii;
-
   //Initial conditions
   template <int dim>
   class InitalConditions: public Function<dim>{
   public:
+    //Usual way of defining a push back is variable.push_back(DataType(size))
     unsigned int dof;
-    InitalConditions (unsigned int _dof): Function<dim>(totalDOF), dof(_dof){}
+    InitalConditions (unsigned int _dof): Function<dim>(totalDOF), dof(_dof) { std::srand(5.5); }
     void vector_value (const Point<dim>   &p, Vector<double>   &values) const{
       Assert (values.size() == totalDOF, ExcDimensionMismatch (values.size(), totalDOF));
       //
-      for (unsigned int i=0;i <CDOFs; i++){
+      for (unsigned int i=0;i<CDOFs; i++){
 	values(2*i)=0.02 + 0.02*(0.5 -(double)(std::rand() % 100 )/100.0); //c
 	values(2*i+1)=0.0; //mu
       }
@@ -32,7 +32,7 @@ namespace softPacking
       }
     }
   };
-  
+
   template <int dim>
   class multipleCH{
   public:
@@ -49,6 +49,7 @@ namespace softPacking
     void output_results (const unsigned int cycle);
     double computeMass (const unsigned int cdof);
     void transferSolution (const unsigned int cdof);
+    void activeParameter(const unsigned int cdof);
     MPI_Comm                                  mpi_communicator;
     parallel::distributed::Triangulation<dim> triangulation;
     FESystem<dim>                             fe;
@@ -72,6 +73,9 @@ namespace softPacking
     unsigned int nextAvailableField;
     std::vector<double> cellMassRatio;
     std::vector<double> cellCenter;
+    std::vector<Vector<double> > cellCenters;
+    std::vector<Point<dim> > cellID;
+    std::vector<double> allottedOP;
   };
 
   template <int dim>
@@ -85,7 +89,7 @@ namespace softPacking
     dof_handler (triangulation),
     pcout (std::cout, (Utilities::MPI::this_mpi_process(mpi_communicator)== 0)),
     computing_timer (mpi_communicator, pcout, TimerOutput::summary, TimerOutput::wall_times),
-    cellMassRatio(CDOFs, 0.0), cellCenter(dim+1){
+    cellMassRatio(CDOFs, 0.0), cellCenter(dim+2){
     //initial randon generator
     std::srand(1);
     
@@ -98,7 +102,7 @@ namespace softPacking
     
     //nodal solution names
     for (unsigned int i=0; i<CDOFs; ++i){
-      char buffer[10];
+      char buffer[100];
       sprintf(buffer, "c%u", i+1); nodal_solution_names.push_back(buffer); nodal_data_component_interpretation.push_back(DataComponentInterpretation::component_is_scalar);
       sprintf(buffer, "mu%u", i+1); nodal_solution_names.push_back(buffer); nodal_data_component_interpretation.push_back(DataComponentInterpretation::component_is_scalar);
     }
@@ -109,14 +113,70 @@ namespace softPacking
     dof_handler.clear ();
   }
 
-      //Setup
+  template <int dim>
+  /*Call this function only when a new cell is born*/
+  void multipleCH<dim>::activeParameter(const unsigned int cells) {
+    for(unsigned int i=0 ; i<cells; i++){
+      cellID.push_back(Point<dim>());
+      cellID[i][0] = cellCenters[i][0];
+      cellID[i][1] = cellCenters[i][1];
+    }
+    dealii::Table<2,double> distCell(cellSize, cellSize); //LowerTriangular Matrix
+    for(unsigned int i = 0 ; i<cells; i++)//Loop till all cells present
+      {
+	//Think of currentSeed as a global loop. For every currentSeed you are entering a row and updating entries.
+	//for(unsigned int j = 0; j < i; j++){
+	distCell[cells][i] = std::pow((cellID[i][0] - cellID[cells][0]),2) + std::pow((cellID[i][1] - cellID[cells][1]),2);
+	distCell[cells][i] = std::sqrt(distCell[cells][i]);
+      }
+    
+    //double countOP[CDOFs];
+    //for (unsigned int k = 0; k<CDOFs; k++) {countOP[k] = 0;}
+    if(cells == 0) {allottedOP[cells] = 0;} //For initial cell
+    for (unsigned int i = 0; i<cells; i++){ //Loops from 0th cell to present cell
+      allottedOP.push_back(i); //Adds an element to the vector 
+      if(allottedOP[i] != 0 || allottedOP[i] != 1 || allottedOP[i] != 2 || allottedOP[i] != 3 || allottedOP[i] != 4){ //Checks if already allocated 
+	if(i < CDOFs) {allottedOP[i] = i; /*countOP[i] = countOP[i]+1;*/}
+	else{
+	  double minOP[CDOFs];
+	  double maxOP;
+	  unsigned int chosenOne;
+	  for (unsigned int k=0; k<CDOFs; k++) {minOP[k] = 10.0;}
+	  maxOP = 0.0;
+	  for (unsigned int m=0; m<CDOFs; m++){
+	    if(allottedOP[i]==m){
+	      if(minOP[m] > distCell[cells][i]){
+		minOP[m] = distCell[cells][i];}
+	    }
+	  }
+	  for(unsigned int k=0; k<CDOFs; k++){
+	    if(maxOP<minOP[k]) {maxOP = minOP[k]; chosenOne=k;}
+	  }
+	  allottedOP[cells] = chosenOne; //Next Free Order Parameter is stored here
+	  //orderOP = chosenOne;
+	}
+      }
+    }
+    //Check if order parameters are allotted properly //Mainly for testing
+    /* for (unsigned int i=0 ; i < currentSeed ; i++) {
+      std::cout << "Order Parameter is "<< allottedOP[i] << " for " << i + 1 <<" cell "<< std::endl;
+    }
+    for (unsigned int i=0 ; i < currentSeed ; i++) {
+      std::cout << "Position: "<< cellID[i][0] << "for" << i+1 << "cell" <<std::endl;
+    }
+    for (unsigned int i=0 ; i < CDOFs; i++) {
+      std::cout << "Number of Cells having Order Parameter "<<i<<" is "<<countOP[i]<<std::endl;
+      }*/
+  }
+  
+  //Setup
   template <int dim>
   void multipleCH<dim>::setup_system (){
     TimerOutput::Scope t(computing_timer, "setup");
     dof_handler.distribute_dofs (fe);
     locally_owned_dofs = dof_handler.locally_owned_dofs ();
     DoFTools::extract_locally_relevant_dofs (dof_handler,
-                                             locally_relevant_dofs);
+					     locally_relevant_dofs);
     
     locally_relevant_solution.reinit (locally_owned_dofs, locally_relevant_dofs, mpi_communicator);
     DoFTools::map_dofs_to_support_points(MappingQ1<dim,dim>(), dof_handler, supportPoints);
@@ -137,18 +197,18 @@ namespace softPacking
     //BC's
     std::vector<bool> uBC (totalDOF, false);
     for (unsigned int i=0; i<dim; i++){
-      uBC[i]=true;
+    uBC[i]=true;
     }
     VectorTools::interpolate_boundary_values (dof_handler, 0, ZeroFunction<dim>(totalDOF), constraints, uBC);
     */
     constraints.close ();
-
+    
     DynamicSparsityPattern dsp (locally_relevant_dofs);
     DoFTools::make_sparsity_pattern (dof_handler, dsp, constraints, false);
     SparsityTools::distribute_sparsity_pattern (dsp, dof_handler.n_locally_owned_dofs_per_processor(), mpi_communicator, locally_relevant_dofs);
     system_matrix.reinit (locally_owned_dofs, locally_owned_dofs, dsp, mpi_communicator);
   }
-
+  
   //Assembly
   template <int dim>
   void multipleCH<dim>::assemble_system (){
@@ -166,7 +226,7 @@ namespace softPacking
     Vector<double>       local_rhs (dofs_per_cell);
     std::vector<unsigned int> local_dof_indices (dofs_per_cell);
     unsigned int n_q_points= fe_values.n_quadrature_points;
-  
+    
     typename DoFHandler<dim>::active_cell_iterator cell = dof_handler.begin_active(), endc = dof_handler.end();
     for (; cell!=endc; ++cell)
       if (cell->is_locally_owned()){
@@ -326,13 +386,12 @@ namespace softPacking
     const unsigned int   dofs_per_cell = fe.dofs_per_cell;
     std::vector<unsigned int> local_dof_indices (dofs_per_cell);
     double cellMass= 0;
-    std::vector<Vector<double> >   values;
+    std::vector<Vector<double> > values;
     for (unsigned int q_point = 0; q_point < n_q_points; ++q_point){
       values.push_back(Vector<double>(2*CDOFs)); //fill the empty values vector with a Vector of size 2*CDOFs for values of each of the components
     }
-    
     //loop over cells
-    for (unsigned int i=0; i<dim+1; i++) cellCenter[i]=0.0;
+    for (unsigned int i=0; i<dim+2; i++) cellCenter[i]=0.0;
     //
     typename DoFHandler<dim>::active_cell_iterator cell = dof_handler.begin_active(), endc = dof_handler.end();
     for (; cell!=endc; ++cell){
@@ -347,7 +406,10 @@ namespace softPacking
 	  double cval=values[q_point][2*cdof];  
 	  if (cval>=0.8){
 	    cellMass += cval*fe_values.JxW(q_point);
-	    for (unsigned int i=0; i<dim; i++) cellCenter[i]+=quadPoint[i]*cval;
+	    for (unsigned int i=0; i<dim; i++){
+	      cellCenter[i]+=quadPoint[i]*cval;
+	      cellCenter[dim+1]+=quadPoint[i]*quadPoint[i]*cval;
+	    }
 	    cellCenter[dim]+=1;
 	  }
 	}
@@ -356,9 +418,21 @@ namespace softPacking
     //accumulate cell center data across all cores
     cellMass= Utilities::MPI::sum(cellMass, mpi_communicator);
     Utilities::MPI::sum(cellCenter, mpi_communicator, cellCenter);
-    for (unsigned int i=0; i<dim; i++) cellCenter[i]/=cellCenter[dim];
+    for (unsigned int i=0; i<dim+2; i++){
+      if(i == 0 || i == 1) 
+	{cellCenter[i]/=cellCenter[dim];}
+      if(i == dim+1)
+	{
+	  cellCenter[i]/=cellCenter[dim];
+	  cellCenter[i]=std::sqrt(cellCenter[i]);
+	}
+    }
+    cellCenters.push_back(Vector<double>(dim+2));
+    for(unsigned int i=0; i<dim+2; i++){
+      cellCenters[cdof][i] = cellCenter[i]; //This will update cellCenters everytime
+    }
     char buffer[100];
-    sprintf(buffer, "cell %u is located at (%5.2e, %5.2e) with mass: %6.3e\n", cdof, cellCenter[0], cellCenter[1], cellMass); pcout << buffer;
+    sprintf(buffer, "cell %u is located at (%5.2e, %5.2e) with radius %5.2e and mass: %6.3e\n", cdof, cellCenter[0], cellCenter[1], cellCenter[3], cellMass); pcout << buffer;
     //
     return cellMass;
   }
@@ -367,16 +441,20 @@ namespace softPacking
   template <int dim>
   void multipleCH<dim>::transferSolution (const unsigned int cdof){
     char buffer[100];
-    sprintf(buffer, "***cell %u has doubled in mass. Dividing into cell %u and cell %u***\n", cdof, cdof, nextAvailableField); pcout << buffer;
+    sprintf(buffer, "***cell %u has doubled in mass. Dividing into cell %u and cell %u with order parameter %e .***\n", cdof, cdof, nextAvailableField, allottedOP[nextAvailableField]); pcout << buffer;
 
     //get random angle for cell division (later be made an explicit function of the underlying mechanics and/or chemical signaling)
     const double pi = std::acos(-1);
     //double theta= (pi/180)*(std::rand() % 180);
     double theta=(pi/180)*45;
-    if (nextAvailableField>=2) theta=(pi/180)*135;
-    if (nextAvailableField>=4) theta=(pi/180)*45;
-    if (nextAvailableField>=8) theta=(pi/180)*135;
-    if (nextAvailableField>=16) theta=(pi/180)*45;
+    for(unsigned int n=0; n<8; n++)
+      {
+	if (nextAvailableField>= std::pow(2,n))
+	  {
+	    if(n%2 != 0) {theta=(pi/180)*135;}
+	    else {theta=(pi/180)*45;}
+	  }
+      }
     sprintf(buffer, "division along %5.1f degree axis\n", 180*theta/pi); pcout << buffer;
 
     //split cell field into two half cell fields
@@ -491,12 +569,16 @@ namespace softPacking
     */
     
     //setup initial conditions
-    VectorTools::interpolate(dof_handler, InitalConditions<dim>(0), U); Un=U;
+
+    
+    VectorTools::interpolate(dof_handler, InitalConditions<dim>(0), U); Un=U; //What is this dof, assigned zero at initial?
     //Sync ghost vectors to non-ghost vectors
     UGhost=U;  UnGhost=Un;
     output_results (0);
 
-    double initialCellMass= computeMass(0);
+    //return;
+    double initialCellMass= computeMass(0); //check this function //Works!
+    return;
     //Time stepping
     currentIncrement=0;
     unsigned int counter=0; bool incCounter=false;
@@ -504,19 +586,20 @@ namespace softPacking
       currentIncrement++;
       solve();
       //check for cell division
-      for (unsigned int cells=0; cells<nextAvailableField; cells++){
-	double cellMass=computeMass(cells); cellMassRatio[cells]=cellMass/initialCellMass;
-	if ((cellMass>2*initialCellMass)){
-	  if (nextAvailableField<CDOFs){
-	    transferSolution(cells);
-	    dt=TimeStep*1.0e-6; incCounter=true; counter=0;
+      for (unsigned int cells=0; cells<nextAvailableField; cells++){ //for(unsigned int cells=0; cells<cellSize; cells++){
+	double cellMass=computeMass(cells); cellMassRatio[cells]=cellMass/initialCellMass; //double cellMass = computeMass(cells); cellMassRatio[cells] = cellMass/initialCellMass
+	return;
+	if ((cellMass>2*initialCellMass)){ //if(cellMass>2*initialCellMass)
+	  activeParameter(cells);               //activeParameter(cells);
+	  if (nextAvailableField<cellSize){ 
+	    transferSolution(cells);     //transferSolution(cells, allottedOP[cells])
+	    dt=TimeStep*1.0e-6; incCounter=true; counter=0; 
 	  }
 	  else{
 	    pcout << "should divide now, but no empty fields available. skipping division \n";
 	  }
 	}
       }
-      
       output_results(currentIncrement);
       pcout << std::endl;
       if (incCounter){
