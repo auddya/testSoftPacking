@@ -27,7 +27,7 @@ namespace softPacking
 	values(2*i+1)=0.0; //mu
       }
       //initial seed cell
-      if (p.distance(Point<dim>())<problemWidth/15){
+      if (p.distance(Point<dim>())<problemWidth/6){
 	values(0)=0.99;
       }
     }
@@ -130,45 +130,37 @@ namespace softPacking
 	distCell[cells][i] = std::sqrt(distCell[cells][i]);
       }
     
-    //double countOP[CDOFs];
-    //for (unsigned int k = 0; k<CDOFs; k++) {countOP[k] = 0;}
-    if(cells == 0) {allottedOP[cells] = 0;} //For initial cell
-    for (unsigned int i = 0; i<cells; i++){ //Loops from 0th cell to present cell
-      allottedOP.push_back(i); //Adds an element to the vector 
-      if(allottedOP[i] != 0 || allottedOP[i] != 1 || allottedOP[i] != 2 || allottedOP[i] != 3 || allottedOP[i] != 4){ //Checks if already allocated 
-	if(i < CDOFs) {allottedOP[i] = i; /*countOP[i] = countOP[i]+1;*/}
-	else{
+    double countOP[CDOFs];
+    for (unsigned int k = 0; k < CDOFs; k++) {countOP[k] = 0;}//Initialisation for all counters of order parameters
+    for (unsigned int i = 0 ; i < cellSize ; i++) {
+      allottedOP.push_back(i); //If one doesnt give this there is a memory allocation error (PETSc error)
+      if (i < CDOFs) {allottedOP[i] = i; countOP[i] = countOP[i] + 1;} //From cell numbers 0 to cAct-1 orderParameters are assigned as index values, 
+      else // Order Parameter assigned based on "Largest among minimum distance among order parameters"
+	{
 	  double minOP[CDOFs];
 	  double maxOP;
-	  unsigned int chosenOne;
-	  for (unsigned int k=0; k<CDOFs; k++) {minOP[k] = 10.0;}
-	  maxOP = 0.0;
-	  for (unsigned int m=0; m<CDOFs; m++){
-	    if(allottedOP[i]==m){
-	      if(minOP[m] > distCell[cells][i]){
-		minOP[m] = distCell[cells][i];}
+	  int chosenOne;
+	  for(unsigned int k = 0; k < CDOFs; k++) { minOP[k] = 10.0;} //Initialise minOP
+	  maxOP = 0.0; //Initialise maxOP after every loop
+	  for(unsigned int j = 0 ; j < i ; j++)
+	    {
+	      for(unsigned int k = 0; k <CDOFs; k++)
+		{
+		  if (allottedOP[j] == k)
+		    {
+		      if(minOP[k] > distCell[i][j]) {minOP[k] = distCell[i][j];}
+		    } //End of Assignment Loop
+		}//At this point you have min[0] to min[CDOFs]. Time to find out who is the maximum among these
+	    } //End of loop till i counter
+	  for(unsigned int k = 0; k<CDOFs; k++)
+	    {
+	      if(maxOP < minOP[k]) {maxOP = minOP[k]; chosenOne = k; }
 	    }
-	  }
-	  for(unsigned int k=0; k<CDOFs; k++){
-	    if(maxOP<minOP[k]) {maxOP = minOP[k]; chosenOne=k;}
-	  }
-	  allottedOP[cells] = chosenOne; //Next Free Order Parameter is stored here
-	  //orderOP = chosenOne;
-	}
-      }
-    }
-    //Check if order parameters are allotted properly //Mainly for testing
-    /* for (unsigned int i=0 ; i < currentSeed ; i++) {
-      std::cout << "Order Parameter is "<< allottedOP[i] << " for " << i + 1 <<" cell "<< std::endl;
-    }
-    for (unsigned int i=0 ; i < currentSeed ; i++) {
-      std::cout << "Position: "<< cellID[i][0] << "for" << i+1 << "cell" <<std::endl;
-    }
-    for (unsigned int i=0 ; i < CDOFs; i++) {
-      std::cout << "Number of Cells having Order Parameter "<<i<<" is "<<countOP[i]<<std::endl;
-      }*/
+	  allottedOP[i] = chosenOne;
+	  countOP[chosenOne] = countOP[chosenOne] + 1;
+	}//Else Loop Ends
+    }//For Loop Ends    
   }
-  
   //Setup
   template <int dim>
   void multipleCH<dim>::setup_system (){
@@ -441,22 +433,18 @@ namespace softPacking
   template <int dim>
   void multipleCH<dim>::transferSolution (const unsigned int cdof){
     char buffer[100];
-    sprintf(buffer, "***cell %u has doubled in mass. Dividing into cell %u and cell %u with order parameter %e .***\n", cdof, cdof, nextAvailableField, allottedOP[nextAvailableField]); pcout << buffer;
+    sprintf(buffer, "***cell %u has doubled in mass. Dividing into cell %u and cell %u***\n", cdof, cdof, nextAvailableField); pcout << buffer;
 
     //get random angle for cell division (later be made an explicit function of the underlying mechanics and/or chemical signaling)
     const double pi = std::acos(-1);
     //double theta= (pi/180)*(std::rand() % 180);
     double theta=(pi/180)*45;
-    for(unsigned int n=0; n<8; n++)
-      {
-	if (nextAvailableField>= std::pow(2,n))
-	  {
-	    if(n%2 != 0) {theta=(pi/180)*135;}
-	    else {theta=(pi/180)*45;}
-	  }
-      }
+    if (nextAvailableField>=2) theta=(pi/180)*135;
+    if (nextAvailableField>=4) theta=(pi/180)*45;
+    if (nextAvailableField>=8) theta=(pi/180)*135;
+    if (nextAvailableField>=16) theta=(pi/180)*45;
     sprintf(buffer, "division along %5.1f degree axis\n", 180*theta/pi); pcout << buffer;
-
+    
     //split cell field into two half cell fields
     Point<dim> cellCenterPoint(cellCenter[0],cellCenter[1]);
     Point<dim> u(std::cos(theta), std::sin(theta)); //cell division axis
@@ -479,39 +467,38 @@ namespace softPacking
 	  const unsigned int id1 = fe_values.get_fe().system_to_component_index(i).first;
 	  const unsigned int shapeID1= fe_values.get_fe().system_to_component_index(i).second;
 	  //get id of mu1
-	  if (id1==2*allottedOP[cdof]){
-	    c1=local_dof_indices[i];
-	    bool foundmu1=false, foundc2=false, foundmu2=false;
-	    for (unsigned int j=0; j<dofs_per_cell; ++j) {
-	      if (fe_values.get_fe().system_to_component_index(j).second==shapeID1){
-		const unsigned int id2 = fe_values.get_fe().system_to_component_index(j).first;
-		if (id2==(2*allottedOP[cdof]+1)) {mu1=local_dof_indices[j]; foundmu1=true;}
-		if (id2==(2*allottedOP[nextAvailableField]))   {c2 =local_dof_indices[j]; foundc2=true;}
-		if (id2==(2*allottedOP[nextAvailableField]+1)) {mu2=local_dof_indices[j]; foundmu2=true;}
+	    if (id1 == 2*allottedOP[cdof]){
+	      c1=local_dof_indices[i];
+	      bool foundmu1=false, foundc2=false, foundmu2=false;
+	      for (unsigned int j=0; j<dofs_per_cell; ++j) {
+		if (fe_values.get_fe().system_to_component_index(j).second==shapeID1){
+		  const unsigned int id2 = fe_values.get_fe().system_to_component_index(j).first;
+		  if (id2==(2*allottedOP[cdof]+1)) {mu1=local_dof_indices[j]; foundmu1=true; /*std::cout<<" Check "<< id2 <<" and "<<id1<<std::endl;*/}
+		  if (id2==(2*allottedOP[nextAvailableField]))   {c2 =local_dof_indices[j]; foundc2=true; /*std::cout<<" Check "<< id2 <<" and "<<id1<<std::endl;*/}
+		  if (id2==(2*allottedOP[nextAvailableField]+1)) {mu2=local_dof_indices[j]; foundmu2=true;}
+		}
+	      } 
+	      if (!foundmu1 || !foundc2 || !foundmu2){std::cout << "ERROR: Couldnot find indices corresponding to mu1/c1/c2. \n"; exit(-1);}
+	      //pcout << shapeID1 << " : " << c1 << " " << mu1 << " " << c2 << " " << mu2 << "\n";
+	      //now find if nodal values should be switched
+	      Point<dim> n1=supportPoints.find(local_dof_indices[i])->second;
+	      Point<dim> v = n1; v-=cellCenterPoint; // vector connecting cell center to this node
+	      double uXv= u[0]*v[1] - v[0]*u[1]; // Z component of u X v cross product
+	      //copy points with +ve cross product (right side of cell division axis) onto new cell field
+	      if (uXv>0.0){
+		/*if (locally_owned_dofs.is_element(c2)) {Un(c2)=Un(c1);}
+		  if (locally_owned_dofs.is_element(mu2)) {Un(mu2)=Un(mu1);}
+		  if (locally_owned_dofs.is_element(c1)) {Un(c1)=0.0;}
+		  if (locally_owned_dofs.is_element(mu1)) {Un(mu1)=0.0;}
+		*/
+		indexc1.push_back(c1); valuec1.push_back(0.02 + 0.02*(0.5 -(double)(std::rand() % 100 )/100.0));
+		indexmu1.push_back(mu1); valuemu1.push_back(0.0);
+		indexc2.push_back(c2); valuec2.push_back(UnGhost(c1));
+		indexmu2.push_back(mu2); valuemu2.push_back(0.0); 
 	      }
 	    }
-	    if (!foundmu1 || !foundc2 || !foundmu2){std::cout << "ERROR: Couldnot find indices corresponding to mu1/c1/c2. \n"; exit(-1);}
-	    //pcout << shapeID1 << " : " << c1 << " " << mu1 << " " << c2 << " " << mu2 << "\n";
-	    //now find if nodal values should be switched
-	    Point<dim> n1=supportPoints.find(local_dof_indices[i])->second;
-	    Point<dim> v = n1; v-=cellCenterPoint; // vector connecting cell center to this node
-	    double uXv= u[0]*v[1] - v[0]*u[1]; // Z component of u X v cross product
-	    //copy points with +ve cross product (right side of cell division axis) onto new cell field
-	    if (uXv>0.0){
-	      /*if (locally_owned_dofs.is_element(c2)) {Un(c2)=Un(c1);}
-	      if (locally_owned_dofs.is_element(mu2)) {Un(mu2)=Un(mu1);}
-	      if (locally_owned_dofs.is_element(c1)) {Un(c1)=0.0;}
-	      if (locally_owned_dofs.is_element(mu1)) {Un(mu1)=0.0;}
-	      */
-	      indexc1.push_back(c1); valuec1.push_back(0.02 + 0.02*(0.5 -(double)(std::rand() % 100 )/100.0));
-	      indexmu1.push_back(mu1); valuemu1.push_back(0.0);
-	      indexc2.push_back(c2); valuec2.push_back(UnGhost(c1));
-	      indexmu2.push_back(mu2); valuemu2.push_back(0.0); 
-	    }
-	  }
-	}
+	}	//pcout << "\n";
       }
-      //pcout << "\n";
     }
     Un.set(indexc1, valuec1);
     Un.set(indexmu1, valuemu1);
@@ -525,28 +512,8 @@ namespace softPacking
   template <int dim>
   void multipleCH<dim>::run (){
     //setup problem geometry and mesh
-#ifdef ellipticMesh
-    GridGenerator::hyper_ball(triangulation, Point<dim>(), (double)problemWidth/2.0);
-    static const HyperBallBoundary<dim> boundary(Point<dim>(), (double)problemWidth/2.0);
-    triangulation.set_boundary (0, boundary);
-    triangulation.refine_global (refinementFactor);
-    //scale the geometry to make the circle into an ellipse
-    std::set<unsigned int> tempSet;
-    typename parallel::distributed::Triangulation<dim>::active_cell_iterator cell = triangulation.begin_active(), endc = triangulation.end();
-    for (;cell!=endc; ++cell){
-      if (cell->is_locally_owned()){
-	for (unsigned int i=0; i<std::pow(2,dim); ++i){
-	  if (tempSet.count(cell->vertex_index(i))== 0) {
-	    cell->vertex(i)[1]=cell->vertex(i)[1]*ellipticityFactor;
-	    tempSet.insert(cell->vertex_index(i));
-	  }
-	}
-      }
-    }
-#else
     GridGenerator::hyper_cube (triangulation, -problemWidth/2.0, problemWidth/2.0);
     triangulation.refine_global (refinementFactor);
-#endif
     setup_system ();
     pcout << "   Number of active cells:       "
 	  << triangulation.n_global_active_cells()
@@ -556,29 +523,25 @@ namespace softPacking
 	  << std::endl;
     //scale the geometry to make the circle into an ellipse (still testing)
     /*
-    std::set<unsigned int> tempSet;
-    typename DoFHandler<dim>::active_cell_iterator cell = dof_handler.begin_active(), endc = dof_handler.end();
+      std::set<unsigned int> tempSet;
+      typename DoFHandler<dim>::active_cell_iterator cell = dof_handler.begin_active(), endc = dof_handler.end();
     for (;cell!=endc; ++cell){
-      for (unsigned int i=0; i<4; ++i){
-	if (tempSet.count(cell->vertex_index(i))== 0) {
-	  cell->vertex(i)[0]=cell->vertex(i)[0]*ELLIPSEFACTOR;
-	  tempSet.insert(cell->vertex_index(i));
-	}
-      }
+    for (unsigned int i=0; i<4; ++i){
+    if (tempSet.count(cell->vertex_index(i))== 0) {
+    cell->vertex(i)[0]=cell->vertex(i)[0]*ELLIPSEFACTOR;
+    tempSet.insert(cell->vertex_index(i));
+    }
+    }
     }
     */
     
     //setup initial conditions
-
-    
-    VectorTools::interpolate(dof_handler, InitalConditions<dim>(0), U); Un=U; //What is this dof, assigned zero at initial?
+    VectorTools::interpolate(dof_handler, InitalConditions<dim>(0), U); Un=U;
     //Sync ghost vectors to non-ghost vectors
     UGhost=U;  UnGhost=Un;
     output_results (0);
-
-    //return;
-    double initialCellMass= computeMass(0); //check this function //Works!
-    //return;
+    
+    double initialCellMass= computeMass(0);
     //Time stepping
     currentIncrement=0;
     unsigned int counter=0; bool incCounter=false;
@@ -586,19 +549,19 @@ namespace softPacking
       currentIncrement++;
       solve();
       //check for cell division
-      for (unsigned int cells=0; cells<nextAvailableField; cells++){ //for(unsigned int cells=0; cells<cellSize; cells++){
-	double cellMass=computeMass(cells); cellMassRatio[cells]=cellMass/initialCellMass; //double cellMass = computeMass(cells); cellMassRatio[cells] = cellMass/initialCellMass
-	if ((cellMass>2*initialCellMass)){ //if(cellMass>2*initialCellMass)
-	  activeParameter(cells);               //activeParameter(cells);
-	  if (nextAvailableField<cellSize){ 
-	    transferSolution(cells);     //transferSolution(cells, allottedOP[cells])
-	    dt=TimeStep*1.0e-6; incCounter=true; counter=0; 
+      for (unsigned int cells=0; cells<nextAvailableField; cells++){
+	double cellMass=computeMass(cells); cellMassRatio[cells]=cellMass/initialCellMass;
+	if ((cellMass>2*initialCellMass)){
+	  if (nextAvailableField<CDOFs){
+	    activeParameter(cells);
+	    transferSolution(cells);
+	    dt=TimeStep*1.0e-6; incCounter=true; counter=0;
 	  }
 	  else{
 	    pcout << "should divide now, but no empty fields available. skipping division \n";
 	  }
 	}
-      }
+      }  
       output_results(currentIncrement);
       pcout << std::endl;
       if (incCounter){
@@ -612,12 +575,10 @@ namespace softPacking
 	  }
 	}
       }
-	
     }
     computing_timer.print_summary ();
   }
 }
-
 
 int main(int argc, char *argv[]){
   try
@@ -638,7 +599,7 @@ int main(int argc, char *argv[]){
                 << "Aborting!" << std::endl
                 << "----------------------------------------------------"
                 << std::endl;
-
+      
       return 1;
     }
   catch (...)
